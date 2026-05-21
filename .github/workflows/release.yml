@@ -85,24 +85,41 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           git fetch origin systray-iconname
+          git fetch --tags upstream
           git checkout systray-iconname
-          if git rebase "$UPSTREAM_TAG"; then
+
+          # Find the release tag the dev branch was cut from. This is the
+          # nearest ancestor v*.*.* tag of HEAD. We rebase ONLY the commits
+          # above that tag (i.e. our patch commits) — not the entire release
+          # branch history, which would replay backports onto a different
+          # release line and conflict on VERSION.txt etc.
+          OLD_TAG=$(git describe --tags --abbrev=0 --match='v[0-9]*.[0-9]*.[0-9]*' HEAD)
+          echo "rebasing systray-iconname: --onto $UPSTREAM_TAG $OLD_TAG"
+
+          if [[ "$OLD_TAG" == "$UPSTREAM_TAG" ]]; then
+            echo "already based on $UPSTREAM_TAG — nothing to rebase"
+            exit 0
+          fi
+
+          if git rebase --onto "$UPSTREAM_TAG" "$OLD_TAG" systray-iconname; then
             git push origin systray-iconname --force-with-lease
           else
             git rebase --abort
             gh issue create \
               --title "Rebase needed: systray-iconname onto ${UPSTREAM_TAG}" \
-              --body "Automated rebase of \`systray-iconname\` onto \`${UPSTREAM_TAG}\` failed due to conflicts. Please rebase manually:
+              --body "Automated rebase of \`systray-iconname\` (currently based on \`${OLD_TAG}\`) onto \`${UPSTREAM_TAG}\` failed due to conflicts in the patch commits.
 
+          Resolve manually:
           \`\`\`bash
           git fetch origin
           git checkout systray-iconname
-          git rebase ${UPSTREAM_TAG}
+          git rebase --onto ${UPSTREAM_TAG} ${OLD_TAG} systray-iconname
           # resolve conflicts in client/systray/logo.go and/or go.mod
           git push origin systray-iconname --force-with-lease
           \`\`\`
 
-          Then re-run the pipeline: \`gh workflow run release.yml --ref pipeline -f force_rebuild=true\`"
+          Then re-run the pipeline: \`gh workflow run release.yml --ref pipeline -f force_rebuild=true\`" \
+              || echo "WARNING: gh issue create failed (likely GITHUB_TOKEN lacks issues:write — Settings → Actions → General → Workflow permissions)"
             exit 1
           fi
 
