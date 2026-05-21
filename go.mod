@@ -559,3 +559,5 @@ tool (
 	github.com/golangci/golangci-lint/v2/cmd/golangci-lint
 	github.com/stacklok/frizbee
 )
+
+replace fyne.io/systray => github.com/nnfewl/systray v1.12.1-iconname
