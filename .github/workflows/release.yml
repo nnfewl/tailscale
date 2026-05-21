@@ -1,0 +1,309 @@
+name: Release patched tailscale-systray
+
+on:
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: 'Rebuild even if release exists'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: release-pipeline
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: tailscale/tailscale
+  SYSTRAY_REPO: nnfewl/systray
+  SYSTRAY_BRANCH: set-icon-name
+
+jobs:
+  # -------------------------------------------------------------------
+  # detect-upstream
+  # -------------------------------------------------------------------
+  detect-upstream:
+    runs-on: ubuntu-24.04
+    outputs:
+      upstream-tag:     ${{ steps.detect.outputs.upstream-tag }}
+      upstream-version: ${{ steps.detect.outputs.upstream-version }}
+      should-build:     ${{ steps.detect.outputs.should-build }}
+      today:            ${{ steps.detect.outputs.today }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Detect latest upstream stable tag
+        id: detect
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE_REBUILD: ${{ inputs.force_rebuild || 'false' }}
+        run: bash scripts/detect-upstream.sh
+      - name: Summary
+        run: |
+          {
+            echo "### Upstream state"
+            echo "| Tag | Version | Needs build? |"
+            echo "|---|---|---|"
+            echo "| \`${{ steps.detect.outputs.upstream-tag }}\` | ${{ steps.detect.outputs.upstream-version }} | ${{ steps.detect.outputs.should-build }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # -------------------------------------------------------------------
+  # sync-fork: fast-forward main + push upstream tag + auto-rebase systray-iconname
+  # -------------------------------------------------------------------
+  sync-fork:
+    needs: detect-upstream
+    if: needs.detect-upstream.outputs.should-build == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          token: ${{ github.token }}
+
+      - name: Sync upstream to fork
+        env:
+          UPSTREAM_TAG: ${{ needs.detect-upstream.outputs.upstream-tag }}
+        run: |
+          git config user.email "tailscale-pipeline@local"
+          git config user.name  "tailscale-pipeline"
+          git remote add upstream "https://github.com/${{ env.UPSTREAM_REPO }}.git"
+          git fetch upstream main --tags
+
+          git push origin \
+            "refs/remotes/upstream/main:refs/heads/main" \
+            --force
+
+          git push origin "refs/tags/${UPSTREAM_TAG}" --force
+
+      - name: Rebase systray-iconname onto new tag
+        env:
+          UPSTREAM_TAG: ${{ needs.detect-upstream.outputs.upstream-tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git fetch origin systray-iconname
+          git checkout systray-iconname
+          if git rebase "$UPSTREAM_TAG"; then
+            git push origin systray-iconname --force-with-lease
+          else
+            git rebase --abort
+            gh issue create \
+              --title "Rebase needed: systray-iconname onto ${UPSTREAM_TAG}" \
+              --body "Automated rebase of \`systray-iconname\` onto \`${UPSTREAM_TAG}\` failed due to conflicts. Please rebase manually:
+
+          \`\`\`bash
+          git fetch origin
+          git checkout systray-iconname
+          git rebase ${UPSTREAM_TAG}
+          # resolve conflicts in client/systray/logo.go and/or go.mod
+          git push origin systray-iconname --force-with-lease
+          \`\`\`
+
+          Then re-run the pipeline: \`gh workflow run release.yml --ref pipeline -f force_rebuild=true\`"
+            exit 1
+          fi
+
+  # -------------------------------------------------------------------
+  # build-linux: ubuntu-24.04 + Go (no Arch container — pure-Go D-Bus systray)
+  # -------------------------------------------------------------------
+  build-linux:
+    needs: [detect-upstream, sync-fork]
+    if: needs.detect-upstream.outputs.should-build == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout pipeline branch
+        uses: actions/checkout@v5
+        with:
+          ref: pipeline
+          path: pipeline
+
+      - name: Checkout fork at upstream tag
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.detect-upstream.outputs.upstream-tag }}
+          path: build-src
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: build-src/go.mod
+          cache-dependency-path: build-src/go.sum
+
+      - name: Clone systray fork (sibling to build-src)
+        env:
+          SYSTRAY_REPO: ${{ env.SYSTRAY_REPO }}
+          SYSTRAY_BRANCH: ${{ env.SYSTRAY_BRANCH }}
+        run: |
+          git clone --depth=1 --branch "$SYSTRAY_BRANCH" \
+            "https://github.com/${SYSTRAY_REPO}.git" systray-fork
+
+      - name: Generate and apply theme patch
+        working-directory: build-src
+        env:
+          UPSTREAM_TAG: ${{ needs.detect-upstream.outputs.upstream-tag }}
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/build-src"
+          git config user.email "tailscale-pipeline@local"
+          git config user.name  "tailscale-pipeline"
+          git fetch origin systray-iconname
+          bash "$GITHUB_WORKSPACE/pipeline/scripts/generate-patches.sh" \
+            "$UPSTREAM_TAG" \
+            "origin/systray-iconname" \
+            "$GITHUB_WORKSPACE/theme-patches"
+          git apply --3way "$GITHUB_WORKSPACE/theme-patches/050-systray-iconname.patch"
+
+      - name: Wire systray fork into go.mod
+        working-directory: build-src
+        run: |
+          SYSTRAY_VERSION=$(go list -m -f '{{.Version}}' fyne.io/systray)
+          echo "fyne.io/systray current version: $SYSTRAY_VERSION"
+          go mod edit -replace "fyne.io/systray@${SYSTRAY_VERSION}=../systray-fork"
+          go mod tidy
+
+      - name: Build tailscale-systray
+        working-directory: build-src
+        env:
+          UPSTREAM_VERSION: ${{ needs.detect-upstream.outputs.upstream-version }}
+        run: |
+          export CGO_ENABLED=1
+          export GOFLAGS="-buildmode=pie -trimpath -mod=mod"
+          go build \
+            -ldflags "-s -w \
+              -X tailscale.com/version.longStamp=${UPSTREAM_VERSION} \
+              -X tailscale.com/version.shortStamp=${UPSTREAM_VERSION}" \
+            -o tailscale-systray \
+            ./cmd/systray
+          strip --strip-unneeded tailscale-systray
+          file tailscale-systray
+
+      - name: Stage artifact tree
+        working-directory: build-src
+        env:
+          UPSTREAM_VERSION: ${{ needs.detect-upstream.outputs.upstream-version }}
+        run: |
+          install -Dm755 tailscale-systray \
+            "$GITHUB_WORKSPACE/staging/usr/bin/tailscale-systray"
+          install -Dm644 "$GITHUB_WORKSPACE/pipeline/systemd/tailscale-systray.service" \
+            "$GITHUB_WORKSPACE/staging/usr/lib/systemd/user/tailscale-systray.service"
+          install -Dm644 LICENSE \
+            "$GITHUB_WORKSPACE/staging/usr/share/licenses/tailscale-systray/LICENSE"
+          tar -C "$GITHUB_WORKSPACE/staging" \
+            -czf "$GITHUB_WORKSPACE/tailscale-systray-${UPSTREAM_VERSION}-linux-x86_64.tar.gz" .
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: tailscale-systray-${{ needs.detect-upstream.outputs.upstream-version }}
+          path: tailscale-systray-${{ needs.detect-upstream.outputs.upstream-version }}-linux-x86_64.tar.gz
+          if-no-files-found: error
+          retention-days: 30
+
+  # -------------------------------------------------------------------
+  # release: create GitHub release with artifact + bump PKGBUILD
+  # -------------------------------------------------------------------
+  release:
+    needs: [detect-upstream, build-linux]
+    if: needs.detect-upstream.outputs.should-build == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
+        with:
+          name: tailscale-systray-${{ needs.detect-upstream.outputs.upstream-version }}
+          path: artifacts/
+
+      - name: Compute sha256
+        id: sums
+        env:
+          UPSTREAM_VERSION: ${{ needs.detect-upstream.outputs.upstream-version }}
+        run: |
+          sum=$(sha256sum "artifacts/tailscale-systray-${UPSTREAM_VERSION}-linux-x86_64.tar.gz" | awk '{print $1}')
+          echo "sha256=$sum" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM_VERSION: ${{ needs.detect-upstream.outputs.upstream-version }}
+          UPSTREAM_TAG: ${{ needs.detect-upstream.outputs.upstream-tag }}
+          TODAY: ${{ needs.detect-upstream.outputs.today }}
+          SHA256: ${{ steps.sums.outputs.sha256 }}
+        run: |
+          RELEASE_TAG="linux-v${UPSTREAM_VERSION}"
+
+          # If force-rebuilding, delete existing release first
+          gh release delete "$RELEASE_TAG" --yes --cleanup-tag 2>/dev/null || true
+
+          cat > body.md <<EOF
+          ## tailscale-systray ${UPSTREAM_VERSION} — theme-native tray icons (Linux x86_64)
+
+          **Upstream**: [\`${UPSTREAM_TAG}\`](https://github.com/${{ env.UPSTREAM_REPO }}/releases/tag/${UPSTREAM_TAG})
+          **Built**: ${TODAY}
+          **sha256**: \`${SHA256}\`
+
+          ### Patch
+          \`client/systray/logo.go\` uses \`SetIconName\` over D-Bus instead of \`IconPixmap\`. GNOME Shell + other StatusNotifierItem hosts resolve icons from the installed theme (Papirus, Tela, etc.) instead of receiving hardcoded PNG pixels.
+
+          Icon names looked up: \`tailscale-connected\`, \`tailscale-disconnected\`, \`tailscale-exit-node-online\`, \`tailscale-exit-node-offline\`.
+
+          ### Tarball layout
+          \`\`\`
+          usr/bin/tailscale-systray
+          usr/lib/systemd/user/tailscale-systray.service
+          usr/share/licenses/tailscale-systray/LICENSE
+          \`\`\`
+
+          ### Install (Arch)
+          \`\`\`bash
+          git clone https://github.com/nnfewl/tailscale.git --branch pipeline tailscale-systray-pkg
+          cd tailscale-systray-pkg
+          makepkg -si
+          systemctl --user daemon-reload
+          systemctl --user enable --now tailscale-systray.service
+          \`\`\`
+
+          ### Install (manual)
+          \`\`\`bash
+          sudo tar -xf tailscale-systray-${UPSTREAM_VERSION}-linux-x86_64.tar.gz -C /
+          systemctl --user daemon-reload
+          systemctl --user enable --now tailscale-systray.service
+          \`\`\`
+
+          Requires an icon theme that ships Tailscale tray icons (Papirus, Tela, ...).
+          EOF
+
+          gh release create "$RELEASE_TAG" \
+            --title "tailscale-systray ${UPSTREAM_VERSION} (Linux, theme icons)" \
+            --notes-file body.md \
+            --target pipeline \
+            "artifacts/tailscale-systray-${UPSTREAM_VERSION}-linux-x86_64.tar.gz"
+
+      - name: Bump PKGBUILD pkgver + sha256
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM_VERSION: ${{ needs.detect-upstream.outputs.upstream-version }}
+          SHA256: ${{ steps.sums.outputs.sha256 }}
+        run: |
+          git config user.email "tailscale-pipeline@local"
+          git config user.name  "tailscale-pipeline"
+          sed -i "s/^pkgver=.*/pkgver=${UPSTREAM_VERSION}/" PKGBUILD
+          sed -i "s/^pkgrel=.*/pkgrel=1/" PKGBUILD
+          sed -i "s/^sha256sums=.*/sha256sums=('${SHA256}')/" PKGBUILD
+          git add PKGBUILD
+          git commit -m "pkgver: ${UPSTREAM_VERSION}" || echo "no PKGBUILD change"
+          git push origin pipeline
+
+  # -------------------------------------------------------------------
+  # cleanup: keep 5 most recent releases
+  # -------------------------------------------------------------------
+  cleanup:
+    needs: [release]
+    if: always() && needs.release.result == 'success'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Prune old releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/cleanup-releases.sh 5

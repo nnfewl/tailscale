@@ -1,0 +1,16 @@
+[Unit]
+Description=Tailscale System Tray (patched: theme-native icons)
+Documentation=https://tailscale.com/kb/1597/linux-systray
+Requires=dbus.service
+After=dbus.service graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStartPre=/bin/bash -c 'for i in $(seq 1 30); do dbus-send --session --dest=org.freedesktop.DBus --print-reply /org/freedesktop/DBus org.freedesktop.DBus.GetNameOwner string:org.kde.StatusNotifierWatcher >/dev/null 2>&1 && exit 0; sleep 1; done; exit 0'
+ExecStart=/usr/bin/tailscale-systray
+Restart=on-abnormal
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target
