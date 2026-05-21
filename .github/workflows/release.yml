@@ -20,8 +20,6 @@ concurrency:
 
 env:
   UPSTREAM_REPO: tailscale/tailscale
-  SYSTRAY_REPO: nnfewl/systray
-  SYSTRAY_BRANCH: set-icon-name
 
 jobs:
   # -------------------------------------------------------------------
@@ -149,15 +147,7 @@ jobs:
           go-version-file: build-src/go.mod
           cache-dependency-path: build-src/go.sum
 
-      - name: Clone systray fork (sibling to build-src)
-        env:
-          SYSTRAY_REPO: ${{ env.SYSTRAY_REPO }}
-          SYSTRAY_BRANCH: ${{ env.SYSTRAY_BRANCH }}
-        run: |
-          git clone --depth=1 --branch "$SYSTRAY_BRANCH" \
-            "https://github.com/${SYSTRAY_REPO}.git" systray-fork
-
-      - name: Generate and apply theme patch
+      - name: Apply patch from systray-iconname
         working-directory: build-src
         env:
           UPSTREAM_TAG: ${{ needs.detect-upstream.outputs.upstream-tag }}
@@ -171,13 +161,6 @@ jobs:
             "origin/systray-iconname" \
             "$GITHUB_WORKSPACE/theme-patches"
           git apply --3way "$GITHUB_WORKSPACE/theme-patches/050-systray-iconname.patch"
-
-      - name: Wire systray fork into go.mod
-        working-directory: build-src
-        run: |
-          SYSTRAY_VERSION=$(go list -m -f '{{.Version}}' fyne.io/systray)
-          echo "fyne.io/systray current version: $SYSTRAY_VERSION"
-          go mod edit -replace "fyne.io/systray@${SYSTRAY_VERSION}=../systray-fork"
           go mod tidy
 
       - name: Build tailscale-systray
