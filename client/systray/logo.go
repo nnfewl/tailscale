@@ -14,6 +14,11 @@ import (
 	"fyne.io/systray"
 )
 
+// SetTheme is a no-op in the SetIconName variant. Theming is delegated to
+// the desktop environment's icon theme; the upstream theme flag has no
+// effect when icons are looked up by name.
+func SetTheme(theme string) {}
+
 type tsLogo struct {
 	dots     [9]byte
 	iconName string
