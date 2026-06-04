@@ -1,5 +1,5 @@
 pkgname=tailscale-systray-bin
-pkgver=1.98.5
+pkgver=1.100.0
 pkgrel=1
 pkgdesc='Tailscale system tray with theme-native icons (Papirus/Tela support)'
 arch=('x86_64')
@@ -11,7 +11,7 @@ depends=('glibc' 'tailscale' 'hicolor-icon-theme')
 optdepends=('papirus-icon-theme: ships Tailscale tray icons'
             'tela-icon-theme: ships Tailscale tray icons')
 source=("https://github.com/nnfewl/tailscale/releases/download/linux-v${pkgver}/tailscale-systray-${pkgver}-linux-x86_64.tar.gz")
-sha256sums=('7323ec04969bfa32e8c265535af9b78f40e44aff565dde45b2b7ccdaf6525b47')
+sha256sums=('76d87f68e7358bdf4001447739735621387cbe3e191444ac832c41711d1e7728')
 options=(!debug !strip)
 
 package() {
