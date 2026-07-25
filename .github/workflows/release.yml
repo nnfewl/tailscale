@@ -28,10 +28,10 @@ jobs:
   detect-upstream:
     runs-on: ubuntu-24.04
     outputs:
-      upstream-tag:     ${{ steps.detect.outputs.upstream-tag }}
+      upstream-tag: ${{ steps.detect.outputs.upstream-tag }}
       upstream-version: ${{ steps.detect.outputs.upstream-version }}
-      should-build:     ${{ steps.detect.outputs.should-build }}
-      today:            ${{ steps.detect.outputs.today }}
+      should-build: ${{ steps.detect.outputs.should-build }}
+      today: ${{ steps.detect.outputs.today }}
     steps:
       - uses: actions/checkout@v6
       - name: Detect latest upstream stable tag
@@ -50,9 +50,9 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   # -------------------------------------------------------------------
-  # sync-fork: fast-forward main + push upstream tag + auto-rebase systray-iconname
+  # rebase-patch: keep systray-iconname based on the latest upstream tag
   # -------------------------------------------------------------------
-  sync-fork:
+  rebase-patch:
     needs: detect-upstream
     if: needs.detect-upstream.outputs.should-build == 'true'
     runs-on: ubuntu-24.04
@@ -62,28 +62,14 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.SYNC_PAT }}
 
-      - name: Sync upstream to fork
-        env:
-          UPSTREAM_TAG: ${{ needs.detect-upstream.outputs.upstream-tag }}
-        run: |
-          git config user.email "tailscale-pipeline@local"
-          git config user.name  "tailscale-pipeline"
-          git remote add upstream "https://github.com/${{ env.UPSTREAM_REPO }}.git"
-          git fetch upstream main --tags
-
-          git push origin \
-            "refs/remotes/upstream/main:refs/heads/main" \
-            --force
-
-          git push origin "refs/tags/${UPSTREAM_TAG}" --force
-
       - name: Rebase systray-iconname onto new tag
         env:
           UPSTREAM_TAG: ${{ needs.detect-upstream.outputs.upstream-tag }}
           GH_TOKEN: ${{ github.token }}
         run: |
           git fetch origin systray-iconname
-          git fetch --tags upstream
+          git remote add upstream "https://github.com/${{ env.UPSTREAM_REPO }}.git"
+          git fetch upstream 'refs/tags/*:refs/tags/*'
           git checkout systray-iconname
 
           # Find the release tag the dev branch was cut from. This is the
@@ -125,7 +111,7 @@ jobs:
   # build-linux: ubuntu-24.04 + Go (no Arch container — pure-Go D-Bus systray)
   # -------------------------------------------------------------------
   build-linux:
-    needs: [detect-upstream, sync-fork]
+    needs: [detect-upstream, rebase-patch]
     if: needs.detect-upstream.outputs.should-build == 'true'
     runs-on: ubuntu-24.04
     steps:
@@ -135,9 +121,10 @@ jobs:
           ref: pipeline
           path: pipeline
 
-      - name: Checkout fork at upstream tag
+      - name: Checkout upstream tag
         uses: actions/checkout@v6
         with:
+          repository: ${{ env.UPSTREAM_REPO }}
           ref: ${{ needs.detect-upstream.outputs.upstream-tag }}
           path: build-src
           fetch-depth: 0
@@ -155,10 +142,11 @@ jobs:
           git config --global --add safe.directory "$GITHUB_WORKSPACE/build-src"
           git config user.email "tailscale-pipeline@local"
           git config user.name  "tailscale-pipeline"
-          git fetch origin systray-iconname
+          git remote add fork "https://github.com/${{ github.repository }}.git"
+          git fetch fork systray-iconname
           bash "$GITHUB_WORKSPACE/pipeline/scripts/generate-patches.sh" \
             "$UPSTREAM_TAG" \
-            "origin/systray-iconname" \
+            "fork/systray-iconname" \
             "$GITHUB_WORKSPACE/theme-patches"
           git apply --3way "$GITHUB_WORKSPACE/theme-patches/050-systray-iconname.patch"
           go mod tidy

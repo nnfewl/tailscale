@@ -5,14 +5,18 @@ Automated fork of [tailscale/tailscale](https://github.com/tailscale/tailscale) 
 ## How it works
 
 ```
-detect-upstream → sync-fork → build-linux → release → cleanup
+detect-upstream → rebase-patch → build-linux → release → cleanup
 ```
 
 1. **Detect**: daily check for new `v*.*.*` stable tags on upstream
-2. **Sync**: fast-forward fork's `main`, push upstream tag, auto-rebase `systray-iconname`
-3. **Build**: ubuntu-24.04 + Go — clone `nnfewl/systray` fork, apply patch, `go build ./cmd/systray`
+2. **Rebase**: auto-rebase `systray-iconname` onto the upstream tag
+3. **Build**: ubuntu-24.04 + Go — check out the tag directly from `tailscale/tailscale`, apply the patch, `go build ./cmd/systray`
 4. **Release**: GitHub release with `tailscale-systray-VERSION-linux-x86_64.tar.gz`, bumps PKGBUILD
 5. **Cleanup**: keep 5 most recent releases
+
+The pipeline reads upstream source directly instead of pushing upstream `main`
+and release tags into this fork, so upstream-only GitHub workflows are not
+triggered here.
 
 ## Patches applied
 
@@ -69,7 +73,7 @@ systemctl --user enable --now tailscale-systray.service
 | Branch | Purpose |
 |--------|---------|
 | `pipeline` | CI/CD scripts, workflows, PKGBUILD (default) |
-| `main` | Pure mirror of upstream tailscale main |
+| `main` | Upstream mirror (not updated by the release pipeline) |
 | `systray-iconname` | Dev branch with `client/systray/logo.go` + `go.mod` changes |
 
 ## Maintenance
