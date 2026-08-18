@@ -67,6 +67,8 @@ jobs:
           UPSTREAM_TAG: ${{ needs.detect-upstream.outputs.upstream-tag }}
           GH_TOKEN: ${{ github.token }}
         run: |
+          git config user.email "tailscale-pipeline@local"
+          git config user.name  "tailscale-pipeline"
           git fetch origin systray-iconname
           git remote add upstream "https://github.com/${{ env.UPSTREAM_REPO }}.git"
           git fetch upstream 'refs/tags/*:refs/tags/*'
