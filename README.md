@@ -22,7 +22,7 @@ triggered here.
 
 **Theme-native tray icons** — generated at build time from `systray-iconname` branch:
 - `client/systray/logo.go` — `systray.SetIconName()` instead of pixel-rendered `SetIcon()`
-- `go.mod` — `replace fyne.io/systray => ../systray-fork` (wires in [`nnfewl/systray@set-icon-name`](https://github.com/nnfewl/systray/tree/set-icon-name) which adds `SetIconName` support)
+- `go.mod` — `replace fyne.io/systray => github.com/nnfewl/systray v1.12.1-iconname` (pins the fork that adds `SetIconName` support)
 
 Icon names looked up by the patched binary:
 - `tailscale-connected`
@@ -78,13 +78,17 @@ systemctl --user enable --now tailscale-systray.service
 
 ## Maintenance
 
-The pipeline auto-rebases `systray-iconname` onto each new upstream tag. If the rebase fails (upstream restructured `client/systray/logo.go`), the workflow opens a GitHub issue with the resolution steps and stops. After resolving locally:
+The pipeline auto-rebases `systray-iconname` onto each new upstream tag. If the rebase fails (for example, upstream changed `client/systray/logo.go` or the surrounding `go.mod` declarations), the workflow opens an issue in this fork with the resolution steps and stops. Preserve upstream dependency and tool declarations when resolving `go.mod`, along with the pinned systray replacement.
+
+To resolve locally, fetch the upstream tags and replay only the patch commits above the old release tag:
 
 ```bash
-git fetch origin
+git fetch origin systray-iconname
+git fetch https://github.com/tailscale/tailscale.git 'refs/tags/*:refs/tags/*'
 git checkout systray-iconname
-git rebase vX.Y.Z
-# resolve conflicts
+OLD_TAG=$(git describe --tags --abbrev=0 --match='v[0-9]*.[0-9]*.[0-9]*' HEAD)
+git rebase --onto vX.Y.Z "$OLD_TAG" systray-iconname
+# resolve conflicts, git add the resolved files, then git rebase --continue
 git push origin systray-iconname --force-with-lease
 gh workflow run release.yml --ref pipeline -f force_rebuild=true
 ```

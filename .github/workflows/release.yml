@@ -20,6 +20,8 @@ concurrency:
 
 env:
   UPSTREAM_REPO: tailscale/tailscale
+  # Keep gh commands on this fork even after adding the upstream remote.
+  GH_REPO: ${{ github.repository }}
 
 jobs:
   # -------------------------------------------------------------------
@@ -98,6 +100,7 @@ jobs:
           Resolve manually:
           \`\`\`bash
           git fetch origin
+          git fetch https://github.com/${{ env.UPSTREAM_REPO }}.git 'refs/tags/*:refs/tags/*'
           git checkout systray-iconname
           git rebase --onto ${UPSTREAM_TAG} ${OLD_TAG} systray-iconname
           # resolve conflicts in client/systray/logo.go and/or go.mod
@@ -105,7 +108,7 @@ jobs:
           \`\`\`
 
           Then re-run the pipeline: \`gh workflow run release.yml --ref pipeline -f force_rebuild=true\`" \
-              || echo "WARNING: gh issue create failed (likely GITHUB_TOKEN lacks issues:write — Settings → Actions → General → Workflow permissions)"
+              || echo "WARNING: could not create the rebase issue in $GH_REPO; see the gh error above"
             exit 1
           fi
 
